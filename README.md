@@ -3,95 +3,95 @@
 **Team Manda — TRI AI Saturdays Cohort 10, Project 3**
 CodaBench competition [17580](https://www.codabench.org/competitions/17580/).
 
-Standard tokenizers are trained mostly on English. Applied to morphologically
-rich African languages they over-fragment words, inflating token counts, cost
-and latency. We train a SuperBPE tokenizer on a multilingual African corpus so
-the same text costs fewer tokens, under a hard losslessness constraint.
+Standard tokenizers are trained mostly on English, so they over-fragment
+morphologically rich African languages, inflating token counts, cost and
+latency. We train a SuperBPE tokenizer on a multilingual African corpus so the
+same text costs fewer tokens, under a hard losslessness constraint.
 
 **Result:** 23,826 tokens on the development task against the baseline's
 50,051 — a 52% reduction. 2.839 chars/token over a 25.5M-character corpus,
-lossless, 0.17s runtime against a 20-minute limit.
+lossless, and the fastest runtime on the final leaderboard (1.38s of 1200s).
 
 ## Dataset
 
 The competition provides no dataset, so data engineering is part of the task.
-
 `scripts/fetch_corpus.py` assembles a corpus from African-language Wikipedia
-editions via Hugging Face, capped at 4,000 paragraphs per language. Selection
-was driven by **breadth over depth**: the evaluation corpus is random samples
-across a range of African datasets, so family coverage beats volume in a few
-languages.
+editions via Hugging Face, capped at 4,000 paragraphs per language, chosen for
+**breadth over depth**: the evaluation corpus is random samples across a range
+of African datasets, so family coverage beats volume in a few languages.
 
-29 languages were collected across Bantu (15), Afro-Asiatic (5), Volta-Niger
-(3), Senegambian (2), Mande, Ubangian, Austronesian and Germanic. Akan failed
-to load. Total: 94,504 paragraphs, 25.5M characters.
+29 languages across Bantu (15), Afro-Asiatic (5), Volta-Niger (3), Senegambian
+(2), Mande, Ubangian, Austronesian and Germanic; Akan failed to load. 94,504
+paragraphs, 25.5M characters.
 
-We do not redistribute source text. Wikipedia is CC-BY-SA and licences differ
-across sources, so the repository ships the fetch script and the derived
-vocabulary instead; the corpus is reconstructible under each source's own
-terms. Full provenance, bias and privacy analysis: `docs/data_card.pdf`.
+Source text is not redistributed: Wikipedia is CC-BY-SA and licences differ, so
+`data/` ships rebuild instructions instead. Provenance, bias and privacy
+analysis: `docs/data_card.pdf`.
 
-## Training pipeline
+## Training Pipeline
 
-**Stage 1 — subword BPE.** Byte-pair encoding where merges may not cross a word
-boundary, so learned tokens stay inside words. Runs to 70% of the vocabulary.
+**Data collection:** `scripts/fetch_corpus.py` (see Dataset).
+**Preprocessing.** Paragraphs are whitespace-normalised, length-filtered and
+written one per line. The fetch script applies the starter kit's
+`preporocess_text.py` when present; it was unavailable for our run (see Known
+limitations).
+
+
+**Stage 1 — subword BPE.** Merges may not cross a word boundary, so tokens stay
+inside words. Runs to 70% of the vocabulary.
 
 **Stage 2 — superword BPE.** The whitespace constraint is lifted; merges may
 span a space, producing superword tokens for frequent multi-word expressions.
 
 **Refinement.** Because inference uses optimal segmentation (below), only the
-token *set* matters, not merge order. So we segment the corpus optimally, drop
-tokens nothing used, and spend the freed slots on new merges. Rounds scoring
-worse on holdout are discarded; both improved here (3.650 → 3.669).
+token *set* matters, not merge order. We segment optimally, drop unused tokens
+and spend the freed slots on new merges. Rounds scoring worse on holdout are
+discarded; both improved (3.650 → 3.669).
 
-**Final hyperparameters:** `--vocab-size 20000 --transition 0.7
---max-token-len 32 --refine-rounds 2 --max-chars 8000000`. Training is CPU-only
-and took about 11 minutes on 7.6M characters.
+**Hyperparameter search.** The trainer prints holdout chars/token. We varied
+corpus size only (3.8M vs 7.6M characters); no transition sweep was run. Final:
+`--vocab-size 20000 --transition 0.7 --max-token-len 32 --refine-rounds 2
+--max-chars 8000000`. CPU-only, ~11 minutes.
 
 **Key design choices.**
 
 - *Optimal segmentation instead of merge replay.* Score depends only on token
   count and losslessness is the only constraint, so `encode()` runs a dynamic
-  program returning the fewest-token segmentation for the vocabulary. Never
-  worse than replaying merges, and it enables the refinement loop.
+  program returning the fewest-token segmentation. Never worse than replaying
+  merges, and it enables the refinement loop.
 - *Byte-level internals.* All 256 single bytes are in the vocabulary, so a
   segmentation always exists and `decode(encode(x)) == x` for any input.
+- *Paragraph-bounded merges.* No token spans a paragraph boundary.
 
 ## Evaluation
 
 `scripts/validate_submission.py` reproduces the evaluator's calling convention
 (`encode(list[str]) -> list[list[int]]`, then a *separate* instance to decode)
 and checks losslessness, total tokens, unique ids against the 20,000 ceiling,
-and timing projected onto the 2M-character final corpus.
+and projected runtime on the 2M-character final corpus.
 
-Edge cases verified: empty strings, empty corpus, space-only lines, the full
-printable ASCII range, Unicode markers, and non-ASCII input.
+Edge cases verified: empty strings, empty corpus, space-only lines, full
+printable ASCII, Unicode markers, non-ASCII input.
+`scripts/evaluate.py` reports chars/token per language **and per language
+family**, worst first, aggregate last — an average hides which languages lost.
 
-`scripts/evaluate.py` reports characters per token per language **and per
-language family**, worst first, with the aggregate printed last — an average
-hides which languages lost.
-
-Both candidates were re-scored on the same 25.5M-character corpus for a fair
-comparison: 2.651 (3.8M chars training) versus 2.839 (7.6M). The larger run
-won and was submitted.
+Both candidates were re-scored on the same 25.5M-character corpus: 2.651 (3.8M
+chars training) versus 2.839 (7.6M). The larger run won and was submitted.
 
 ## Known limitations
 
-Stated plainly, per the commitments in our Data Card and Impact Statement:
+Stated plainly, per our Data Card and Impact Statement commitments:
 
-- **Training text was not preprocessed with the starter kit's
-  `preporocess_text.py`.** The evaluator supplies ASCII transliterations with
-  Unicode markers; we trained on raw UTF-8. Part of the vocabulary therefore
-  learned byte patterns that cannot appear at evaluation. We believe this is
-  the single largest remaining source of lost score.
-- **No hyperparameter sweep.** Only `--transition 0.7` was run, under time
-  pressure. The sweep is implemented but was not executed.
+- **Training text was not preprocessed with `preporocess_text.py`.** The
+  evaluator supplies ASCII transliterations with Unicode markers; we trained on
+  raw UTF-8, so part of the vocabulary learned byte patterns that cannot appear
+  at evaluation. Likely the largest remaining source of lost score.
+- **No transition sweep.** Only `--transition 0.7` was run.
 - **No morphological rules.** The brief mentions combining frequency with
-  morphological rules; ours is purely statistical, as the SuperBPE paper
-  itself is. Hand-written morphology for 29 languages without native-speaker
-  validation would have been guesswork.
-- **ASCII flattening degrades the languages we most want to serve** (see
-  `docs/impact_statement_card.pdf`).
+  morphological rules; ours is purely statistical, as the SuperBPE paper is.
+  Hand-written morphology for 29 languages without native-speaker validation
+  would have been guesswork.
+- **ASCII flattening degrades the languages we most want to serve.**
 
 ## Reproduction
 
@@ -109,26 +109,28 @@ python3 scripts/validate_submission.py --dir . --corpus corpus.txt
 zip -X submission.zip tokenizer.py tokenizer.json
 ```
 
-`tokenizer.py` is the submission entry point and loads `tokenizer.json` from
-alongside itself. Nothing is trained, downloaded or fetched at evaluation time.
-Requires ~4GB RAM at 8M characters.
+`tokenizer.py` loads `tokenizer.json` from alongside itself. Nothing is trained
+or fetched at evaluation time. Needs ~4GB RAM at 8M characters.
 
 ## Repository layout
 
 ```
-tokenizer.py                     submission entry point
-tokenizer.json                   learned vocabulary (20,000 tokens)
-scripts/fetch_corpus.py          corpus assembly
-scripts/train_tokenizer.py       two-stage trainer + refinement
-scripts/validate_submission.py   pre-submission checks
-scripts/evaluate.py              per-language and per-family results
-docs/                            the four cohort challenges
+tokenizer.py / tokenizer.json    submission entry point + 20,000-token vocab
+scripts/                         fetch_corpus, train_tokenizer,
+                                 validate_submission, evaluate
+data/                            corpus rebuild instructions
+docs/ (and doc/)                 the four cohort challenges
 ```
 
 ## Appendix
 
-**Contributor:** Law Adagbon — sole contributor, working under the team name
-Team Manda. No additional members and no assigned mentor.
+**Team Manda:** Abdurrazaq Khidir Olalekan · Adetayo Tella · Arturo Espinosa
+Vargas · Ayomide Adeduro · Boluwatife Odunlami · Chitom Uzokwe · Lawrence
+Adagbon · Surajo Nuhu Umar · Zakaria Tibtiba
+
+**Mentor:** none assigned.
+
+**Implementation and documentation:** Lawrence Adagbon.
 
 **Cohort challenges** are in `docs/`.
 
